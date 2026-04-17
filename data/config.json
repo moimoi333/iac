@@ -1,0 +1,21 @@
+{
+  "titre": "Roadmap IAC",
+  "categories": [
+    { "key": "infra",    "label": "Infrastructure",  "color": "#3b82f6" },
+    { "key": "secu",     "label": "Sécurité",         "color": "#ef4444" },
+    { "key": "data",     "label": "Data & IA",        "color": "#8b5cf6" },
+    { "key": "appli",    "label": "Applications",     "color": "#10b981" },
+    { "key": "transfo",  "label": "Transformation",   "color": "#f59e0b" }
+  ],
+  "pilotes": [
+    { "key": "alice",   "label": "Alice Martin",  "color": "#3b82f6", "avatar": "", "conges": [] },
+    { "key": "bob",     "label": "Bob Dupont",    "color": "#10b981", "avatar": "", "conges": [] },
+    { "key": "claire",  "label": "Claire Leroy",  "color": "#8b5cf6", "avatar": "", "conges": [] },
+    { "key": "david",   "label": "David Bernard", "color": "#f59e0b", "avatar": "", "conges": [] }
+  ],
+  "conges_style": {
+    "color": "#f59e0b",
+    "opacity": 0.12,
+    "label_color": "#92400e"
+  }
+}

@@ -1,0 +1,9 @@
+name,cat,pilot,start,end,progress,priority,milestones
+Migration cloud AWS,infra,alice,2026-01-15,2026-06-30,45,1,"2026-03-01|Bascule dev|livraison ; 2026-06-30|Go-Live prod|critique"
+Refonte IAM,secu,bob,2026-02-01,2026-05-31,30,1,"2026-04-01|Audit SSO|livraison"
+Pipeline Data Lake,data,claire,2026-03-01,2026-09-30,10,2,"2026-06-01|POC validé|livraison ; 2026-09-30|Mise en prod|critique"
+Portail RH nouvelle version,appli,david,2026-04-01,2026-08-31,0,2,
+Programme DevSecOps,transfo,alice,2026-01-01,2026-12-31,20,2,"2026-06-30|Bilan S1|livraison"
+Mise à jour PKI,secu,bob,2026-05-01,2026-07-31,0,1,
+Modernisation monitoring,infra,claire,2026-02-15,2026-05-15,60,3,
+Chatbot interne IA,data,david,2026-06-01,2026-11-30,0,3,

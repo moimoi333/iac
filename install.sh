@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# install.sh — Bootstrap a Debian 12 Bookworm server with Apache2, GitHub CLI, and Claude Code
-# Source: https://github.com/moimoi333/iac
+# install.sh — Bootstrap Debian 12 Bookworm : Apache2 (reverse proxy) + Node.js + GitHub CLI + Claude Code
+# Héberge l'application Roadmap IAC depuis https://github.com/moimoi333/iac
+#
+# Usage : curl -fsSL https://raw.githubusercontent.com/moimoi333/iac/main/install.sh | bash
 
 set -euo pipefail
 
 REPO_URL="https://github.com/moimoi333/iac.git"
-WEB_ROOT="/var/www/iac"
+APP_DIR="/opt/iac"
+APP_PORT=3000
+APP_USER="iac"
 APACHE_CONF="/etc/apache2/sites-available/iac.conf"
+SERVICE_FILE="/etc/systemd/system/iac-roadmap.service"
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 log()  { echo "[INFO]  $*"; }
 err()  { echo "[ERROR] $*" >&2; exit 1; }
 
@@ -30,7 +35,7 @@ apt-get install -y -qq \
   git \
   apt-transport-https
 
-# ── 3. Node.js 18 (requis pour Claude Code) ───────────────────────────────────
+# ── 3. Node.js 18 ────────────────────────────────────────────────────────────
 if ! command -v node &>/dev/null || [[ "$(node --version | cut -d. -f1 | tr -d v)" -lt 18 ]]; then
   log "Installation de Node.js 18 via NodeSource..."
   curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
@@ -55,59 +60,93 @@ else
 fi
 
 # ── 5. Claude Code ────────────────────────────────────────────────────────────
-if ! command -v claude &>/dev/null; then
+if ! command -v claude &>/dev/null && [[ ! -f /root/.local/bin/claude ]]; then
   log "Installation de Claude Code..."
   npm install -g @anthropic-ai/claude-code --quiet
-  # Assurer que ~/.local/bin est dans le PATH pour root
   export PATH="$HOME/.local/bin:$PATH"
-  if ! grep -q '.local/bin' /root/.bashrc 2>/dev/null; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc
-  fi
+  grep -q '.local/bin' /root/.bashrc 2>/dev/null \
+    || echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc
 else
-  log "Claude Code $(claude --version 2>/dev/null || echo 'installé') déjà présent."
+  log "Claude Code déjà présent."
 fi
 
 # ── 6. Apache 2 ───────────────────────────────────────────────────────────────
 log "Installation d'Apache 2..."
 apt-get install -y -qq apache2
 
-# ── 7. Clonage du dépôt iac ───────────────────────────────────────────────────
-log "Déploiement du site depuis $REPO_URL..."
-if [[ -d "$WEB_ROOT/.git" ]]; then
+# ── 7. Clonage / mise à jour du dépôt iac ────────────────────────────────────
+log "Déploiement de l'application depuis $REPO_URL..."
+if [[ -d "$APP_DIR/.git" ]]; then
   log "Dépôt déjà présent, mise à jour (git pull)..."
-  git -C "$WEB_ROOT" pull --ff-only
+  git -C "$APP_DIR" pull --ff-only
 else
-  rm -rf "$WEB_ROOT"
-  git clone "$REPO_URL" "$WEB_ROOT"
+  rm -rf "$APP_DIR"
+  git clone "$REPO_URL" "$APP_DIR"
 fi
-chown -R www-data:www-data "$WEB_ROOT"
-chmod -R 755 "$WEB_ROOT"
 
-# ── 8. Configuration Apache ───────────────────────────────────────────────────
-log "Configuration du VirtualHost Apache..."
+# ── 8. Utilisateur système dédié ─────────────────────────────────────────────
+if ! id "$APP_USER" &>/dev/null; then
+  log "Création de l'utilisateur système '$APP_USER'..."
+  useradd --system --no-create-home --shell /usr/sbin/nologin "$APP_USER"
+fi
+chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+
+# ── 9. Dépendances Node.js ───────────────────────────────────────────────────
+log "Installation des dépendances Node.js..."
+cd "$APP_DIR"
+npm install --omit=dev --quiet
+
+# ── 10. Service systemd ──────────────────────────────────────────────────────
+log "Configuration du service systemd iac-roadmap..."
+cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=IAC Roadmap — serveur Node.js
+After=network.target
+
+[Service]
+Type=simple
+User=$APP_USER
+WorkingDirectory=$APP_DIR
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production PORT=$APP_PORT
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable iac-roadmap
+systemctl restart iac-roadmap
+
+# Attendre que le serveur Node soit prêt
+log "Démarrage du serveur Node.js (port $APP_PORT)..."
+for i in $(seq 1 10); do
+  curl -sf "http://localhost:$APP_PORT/" &>/dev/null && break
+  sleep 1
+done
+
+# ── 11. Apache — reverse proxy vers Node.js ──────────────────────────────────
+log "Configuration d'Apache en reverse proxy..."
+a2enmod proxy proxy_http &>/dev/null
+
 cat > "$APACHE_CONF" <<EOF
 <VirtualHost *:80>
     ServerAdmin webmaster@localhost
-    DocumentRoot $WEB_ROOT
 
-    <Directory $WEB_ROOT>
-        Options Indexes FollowSymLinks
-        AllowOverride All
-        Require all granted
-    </Directory>
+    # Reverse proxy vers l'application Node.js
+    ProxyPreserveHost On
+    ProxyPass        / http://127.0.0.1:$APP_PORT/
+    ProxyPassReverse / http://127.0.0.1:$APP_PORT/
 
-    ErrorLog \${APACHE_LOG_DIR}/iac_error.log
+    ErrorLog  \${APACHE_LOG_DIR}/iac_error.log
     CustomLog \${APACHE_LOG_DIR}/iac_access.log combined
 </VirtualHost>
 EOF
 
-# Désactiver le vhost par défaut, activer iac
 a2dissite 000-default.conf &>/dev/null || true
 a2ensite iac.conf
-a2enmod rewrite &>/dev/null || true
-
-# ── 9. Démarrage d'Apache ─────────────────────────────────────────────────────
-log "Activation et démarrage d'Apache 2..."
 systemctl enable apache2
 systemctl restart apache2
 
@@ -118,12 +157,13 @@ echo "======================================================="
 echo " Installation terminée avec succès !"
 echo "======================================================="
 echo " Apache 2  : $(apache2 -v 2>/dev/null | head -1)"
-echo " GitHub CLI: $(gh --version 2>/dev/null | head -1)"
 echo " Node.js   : $(node --version 2>/dev/null)"
+echo " GitHub CLI: $(gh --version 2>/dev/null | head -1)"
 echo " Claude    : installé dans ~/.local/bin/claude"
 echo ""
-echo " Site web  : http://$SERVER_IP/"
-echo " Racine web: $WEB_ROOT  (dépôt git: $REPO_URL)"
+echo " Roadmap   : http://$SERVER_IP/"
+echo " App dir   : $APP_DIR  (dépôt git: $REPO_URL)"
+echo " Service   : systemctl status iac-roadmap"
 echo ""
 echo " Pour authentifier GitHub CLI : gh auth login"
 echo " Pour configurer Claude Code  : claude"
