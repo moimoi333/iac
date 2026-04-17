@@ -1,0 +1,166 @@
+# deploy.yaml — Roadmap IAC sur k3s
+# Usage : kubectl apply -f https://raw.githubusercontent.com/moimoi333/iac/main/deploy.yaml
+#
+# Architecture :
+#   init container  → clone du dépôt + npm ci (image node:18-bookworm-slim)
+#   main container  → node server.js (port 3000)
+#   PVC iac-data    → /app/data (config.json + projets.csv persistés)
+#   PVC iac-modules → /app/node_modules (cache npm, évite de réinstaller à chaque redémarrage)
+#   Service         → LoadBalancer port 80 → pod 3000 (k3s ServiceLB)
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: iac
+
+# ── Stockage persistant ──────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: iac-data
+  namespace: iac
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 256Mi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: iac-modules
+  namespace: iac
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 512Mi
+
+# ── Déploiement ──────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iac-roadmap
+  namespace: iac
+  labels:
+    app: iac-roadmap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iac-roadmap
+  strategy:
+    type: Recreate           # nécessaire car les PVC sont ReadWriteOnce
+  template:
+    metadata:
+      labels:
+        app: iac-roadmap
+    spec:
+      initContainers:
+        - name: setup
+          image: node:18-bookworm-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+
+              echo "[1/4] Installation de git..."
+              apt-get update -qq && apt-get install -y -qq git
+
+              echo "[2/4] Clonage du dépôt (shallow)..."
+              git clone --depth=1 https://github.com/moimoi333/iac.git /tmp/repo
+
+              echo "[3/4] Copie des fichiers applicatifs..."
+              cp -r /tmp/repo/public /tmp/repo/server.js /tmp/repo/package*.json /app/
+
+              echo "[4/4] Dépendances npm (cache PVC)..."
+              # Réinstalle uniquement si package.json a changé
+              if ! diff -q /app/package.json /modules/package.json.bak > /dev/null 2>&1; then
+                npm ci --omit=dev --prefix /app --quiet
+                cp /app/package.json /modules/package.json.bak
+              else
+                echo "    → node_modules à jour, copie du cache..."
+                cp -a /modules/node_modules /app/
+              fi
+
+              echo "[data] Initialisation des données (première fois uniquement)..."
+              [ -f /app/data/config.json ] || cp /tmp/repo/data/config.json /app/data/
+              [ -f /app/data/projets.csv ] || cp /tmp/repo/data/projets.csv /app/data/
+
+              echo "Setup terminé."
+          volumeMounts:
+            - name: app-code
+              mountPath: /app
+            - name: iac-data
+              mountPath: /app/data
+            - name: iac-modules
+              mountPath: /modules
+
+      containers:
+        - name: iac-roadmap
+          image: node:18-bookworm-slim
+          workingDir: /app
+          command: ["node", "server.js"]
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3000"
+          volumeMounts:
+            - name: app-code
+              mountPath: /app
+            - name: iac-data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+
+      volumes:
+        - name: app-code
+          emptyDir: {}
+        - name: iac-data
+          persistentVolumeClaim:
+            claimName: iac-data
+        - name: iac-modules
+          persistentVolumeClaim:
+            claimName: iac-modules
+
+# ── Service (k3s ServiceLB → IP externe automatique) ────────────────────────
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iac-roadmap
+  namespace: iac
+spec:
+  type: LoadBalancer
+  selector:
+    app: iac-roadmap
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
