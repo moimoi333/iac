@@ -5,6 +5,15 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
+const DEFAULTS_DIR = path.join(__dirname, 'defaults');
+
+// Initialise les données depuis les défauts si le répertoire monté est vide
+fs.mkdirSync(DATA_DIR, { recursive: true });
+['config.json', 'projets.csv'].forEach(f => {
+  const target = path.join(DATA_DIR, f);
+  const src = path.join(DEFAULTS_DIR, f);
+  if (!fs.existsSync(target) && fs.existsSync(src)) fs.copyFileSync(src, target);
+});
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.text({ limit: '10mb' }));
